@@ -1,0 +1,293 @@
+﻿unit uEditWareneinkauf;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
+  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, Vcl.Mask, Vcl.ExtCtrls,
+  Vcl.ComCtrls,
+  FireDAC.Stan.Param, FireDAC.Phys.SQLite, Data.DB, FireDAC.Comp.DataSet, FireDAC.Comp.Client,
+  FireDAC.Stan.Intf, FireDAC.DApt, Vcl.Imaging.pngimage, DateUtils;
+
+type
+  TfEditWareneinkauf = class(TForm)
+    edSKU: TLabeledEdit;
+    dtpEinkaufsdatum: TDateTimePicker;
+    Label1: TLabel;
+    edEinkaufswert: TLabeledEdit;
+    Label2: TLabel;
+    edEinkaufBemerkung: TLabeledEdit;
+    cbEinheiten: TComboBox;
+    Label3: TLabel;
+    edNeueEinheit: TLabeledEdit;
+    Label6: TLabel;
+    btnAbort: TButton;
+    btnSave: TButton;
+    Panel1: TPanel;
+    Label7: TLabel;
+    imgTaschenrechner: TImage;
+    pnlVerkauft: TPanel;
+    lbVerkauft: TLabel;
+    procedure FormShow(Sender: TObject);
+    procedure btnAbortClick(Sender: TObject);
+    procedure btnSaveClick(Sender: TObject);
+    procedure imgTaschenrechnerClick(Sender: TObject);
+    procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+  private
+    procedure ShowInventarEntryFromDB(const AConnection: TFDConnection);
+  public
+    ENTRYID: integer;
+    { Public-Deklarationen }
+  end;
+
+var
+  fEditWareneinkauf: TfEditWareneinkauf;
+  Verkauft: boolean;
+  Verkaufswert, Steuerbetrag: Int64;
+
+implementation
+
+{$R *.dfm}
+
+uses
+  uDBFunctions, uFunctions, uMain;
+
+
+
+procedure TfEditWareneinkauf.btnAbortClick(Sender: TObject);
+begin
+  close;
+end;
+
+procedure TfEditWareneinkauf.btnSaveClick(Sender: TObject);
+var
+  sku, einkaufBemerkung, einheit, neueEinheit: string;
+  einkaufswertCent: Int64;
+  TSEinkauf: Int64;
+  FDQuery: TFDQuery;
+  verkaufswertCent, SteuerbetragCent, DiffCent: Int64;
+begin
+  // ===== Validierungen =====
+  if Trim(edSKU.Text) = '' then
+  begin
+    ShowMessage('Bitte geben Sie die SKU-Nummer ein!');
+    Exit;
+  end;
+
+  einkaufswertCent := EditToCentSafe(edEinkaufswert);
+  if einkaufswertCent <= 0 then
+  begin
+    ShowMessage('Bitte geben Sie einen gültigen Einkaufswert ein!');
+    Exit;
+  end;
+
+  // ===== Werte übernehmen =====
+  sku              := Trim(edSKU.Text);
+  einkaufBemerkung := Trim(edEinkaufBemerkung.Text);
+  einheit          := Trim(cbEinheiten.Text);
+  neueEinheit      := Trim(edNeueEinheit.Text);
+
+  // ===== Einkaufsdatum → Unix-Timestamp =====
+  if dtpEinkaufsdatum.Checked then
+    TSEinkauf := DateTimeToUnix(dtpEinkaufsdatum.Date)
+  else
+    TSEinkauf := 0;
+
+  //Wenn Artikel verkauft.
+  //Zu besteuernden Betrag aktualisieren
+  if(Verkauft) then
+  begin
+    einkaufswertCent  := EditToCentSafe(edEinkaufswert);
+    verkaufswertCent  := Verkaufswert;
+    steuerbetragCent := verkaufswertCent - einkaufswertCent;
+  end;
+
+  FDQuery := TFDQuery.Create(nil);
+  try
+    FDQuery.Connection := fMain.FDConnection1;
+
+    if(Verkauft) then
+    begin
+      FDQuery.SQL.Text :=
+        'UPDATE inventar ' +
+        'SET Einkaufsdatum = :EINKAUFSDATUM, ' +
+        'SKU = :SKU, ' +
+        'Einkaufswert = :EINKAUFSWERT, ' +
+        'EinkaufBemerkung = :EINKAUFBEMERKUNG, ' +
+        'Steuerbetrag = :STEUERBETRAG, ' +
+        'Einheit = :EINHEIT ' +
+        'WHERE id = :ID';
+    end
+    else
+    begin
+      FDQuery.SQL.Text :=
+        'UPDATE inventar ' +
+        'SET Einkaufsdatum = :EINKAUFSDATUM, ' +
+        'SKU = :SKU, ' +
+        'Einkaufswert = :EINKAUFSWERT, ' +
+        'EinkaufBemerkung = :EINKAUFBEMERKUNG, ' +
+        'Einheit = :EINHEIT ' +
+        'WHERE id = :ID';
+    end;
+
+    fMain.FDConnection1.StartTransaction;
+    try
+      FDQuery.ParamByName('ID').AsInteger := ENTRYID;
+      FDQuery.ParamByName('EINKAUFSDATUM').AsLargeInt := TSEinkauf;
+      FDQuery.ParamByName('SKU').AsString              := sku;
+      FDQuery.ParamByName('EINKAUFSWERT').AsLargeInt   := einkaufswertCent;
+      FDQuery.ParamByName('EINKAUFBEMERKUNG').AsString := einkaufBemerkung;
+
+      if(Verkauft) then
+      begin
+        FDQuery.ParamByName('STEUERBETRAG').AsLargeInt := SteuerbetragCent;
+      end;
+
+      if neueEinheit <> '' then
+      begin
+        AddEinheitIfNotExists(fMain.FDConnection1, neueEinheit);
+        LoadEinheitenFromDB(fMain.FDConnection1, cbEinheiten);
+        FDQuery.ParamByName('EINHEIT').AsString := neueEinheit;
+      end
+      else
+        FDQuery.ParamByName('EINHEIT').AsString := einheit;
+
+      FDQuery.ExecSQL;
+      fMain.FDConnection1.Commit;
+    except
+      on E: Exception do
+      begin
+        fMain.FDConnection1.Rollback;
+        raise;
+      end;
+    end;
+  finally
+    FDQuery.Free;
+  end;
+
+  // ===== UI aktualisieren =====
+  fMain.LoadInventarToListView;
+
+  if(fMain.edSuchbegriff.Visible) AND (fMain.edSuchbegriff.Text <> '') then
+  begin
+    fMain.btnSucheClick(nil);
+  end;
+
+  uMain.ListViewDirty := True;
+
+  Close;
+end;
+
+
+
+
+
+
+
+procedure TfEditWareneinkauf.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+begin
+  if Key = VK_ESCAPE then
+  begin
+    Key := 0;
+    Close;
+  end;
+end;
+
+procedure TfEditWareneinkauf.FormShow(Sender: TObject);
+begin
+  LoadEinheitenFromDB(fMain.FDConnection1, cbEinheiten);
+
+  ShowInventarEntryFromDB(fMain.FDConnection1);
+end;
+
+
+
+
+procedure TfEditWareneinkauf.imgTaschenrechnerClick(Sender: TObject);
+begin
+  OpenCalculator
+end;
+
+
+
+
+procedure TfEditWareneinkauf.ShowInventarEntryFromDB(const AConnection: TFDConnection);
+var
+  Q: TFDQuery;
+  TSEinkauf: Int64;
+  DTEinkauf: TDateTime;
+begin
+  Q := TFDQuery.Create(nil);
+  try
+    Q.Connection := AConnection;
+    Q.SQL.Text :=
+      'SELECT Einkaufsdatum, SKU, Einkaufswert, EinkaufBemerkung, Verkaufsdatum, ' +
+      'Verkaufswert, VerkaufBemerkung, Steuerbetrag, RechnungsNr, Einheit ' +
+      'FROM inventar WHERE id = :ID';
+
+    Q.ParamByName('ID').DataType := ftInteger;
+    Q.ParamByName('ID').AsInteger := ENTRYID;
+    Q.Open;
+
+    if not Q.IsEmpty then
+    begin
+      if(not Q.FieldByName('RechnungsNr').IsNull) OR
+        (Q.FieldByName('Verkaufswert').AsInteger <> 0) OR
+        (Q.FieldByName('Steuerbetrag').AsInteger <> 0) then
+      begin
+        Verkauft := true;
+        Verkaufswert := Q.FieldByName('Verkaufswert').AsLargeInt;
+        Steuerbetrag := Q.FieldByName('Steuerbetrag').AsLargeInt;
+
+        pnlVerkauft.Visible := true;
+        lbVerkauft.Caption := 'Artikel wurde verkauft' + sLineBreak +
+                              'RechnungsNr: ' + Q.FieldByName('RechnungsNr').AsString;
+      end
+      else
+      begin
+        Verkauft := false;
+        Verkaufswert := 0;
+        Steuerbetrag := 0;
+        pnlVerkauft.Visible := false;
+      end;
+
+      // === SKU ===
+      edSKU.Text := Q.FieldByName('SKU').AsString;
+
+      // === Einkaufsdatum (Integer -> DateTime) ===
+      if Q.FieldByName('Einkaufsdatum').IsNull then
+        TSEinkauf := 0
+      else
+        TSEinkauf := Q.FieldByName('Einkaufsdatum').AsLargeInt;
+
+      if TSEinkauf = 0 then
+      begin
+        dtpEinkaufsdatum.Date := Now;
+        dtpEinkaufsdatum.Checked := False;
+      end
+      else
+      begin
+        DTEinkauf := UnixToDateTime(TSEinkauf);
+        dtpEinkaufsdatum.Date := DTEinkauf;
+        dtpEinkaufsdatum.Checked := True;
+      end;
+
+      // === Einkaufswert ===
+      edEinkaufswert.Text := CentToEuro(Q.FieldByName('Einkaufswert').AsLargeInt);
+
+      // === EinkaufBemerkung ===
+      edEinkaufBemerkung.Text := Q.FieldByName('EinkaufBemerkung').AsString;
+
+      // === Einheit ===
+      SelectComboBoxItemByText(cbEinheiten, Q.FieldByName('Einheit').AsString);
+    end;
+  finally
+    Q.Free;
+  end;
+end;
+
+
+
+
+
+end.
