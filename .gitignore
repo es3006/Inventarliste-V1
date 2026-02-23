@@ -1,0 +1,8 @@
+.DS_STORE
+DCU/
+__history/
+__recovery/
+*.exe
+*.dmg
+*.zip
+*.7z
